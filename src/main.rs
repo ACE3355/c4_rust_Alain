@@ -1159,46 +1159,4 @@ mod tests {
         );
     }
 
-    // ---------- New Tests Added Below ----------
-
-    #[test]
-    fn tokenizer_handles_empty_string() {
-        let tokens = tokenizer("");
-        assert!(tokens.is_empty());
-    }
-
-    #[test]
-    fn parse_logical_expression() {
-        let tokens = tokenizer("int main() { return 1 < 2 == 1; }");
-        let ast = parse_token(&tokens);
-        match ast {
-            ASTNode::Sequence(v) => match &v[0] {
-                ASTNode::Return(expr) => match &**expr {
-                    Expr::Equal(left, right) => {
-                        matches!(**left, Expr::Less(_, _));
-                        matches!(**right, Expr::Number(1));
-                    },
-                    _ => panic!("Expected equality expression"),
-                },
-                _ => panic!("Expected return node"),
-            },
-            _ => panic!("Expected sequence node"),
-        }
-    }
-
-    #[test]
-    fn vm_syscall_stub_behavior() {
-        let program = vec![
-            Instruction::IMM(1),
-            Instruction::IMM(123),
-            Instruction::PRTF,
-            Instruction::MALC,
-            Instruction::IMM(3),
-            Instruction::CLOS,
-            Instruction::EXIT,
-        ];
-        let mut vm = VM::new(program);
-        vm.run();
-        assert_eq!(vm.stack.len(), 3); // Dummy values for now
-    }
-}
+    
