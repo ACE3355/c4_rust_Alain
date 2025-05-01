@@ -4,7 +4,10 @@ use std::fs;
 use std::iter::Peekable;
 use std::slice::Iter;
 
-// Tokens recognized by the lexers
+/// Represents the set of lexical tokens recognized by the compiler.
+/// These tokens are produced by the lexer and consumed by the parser.
+/// Includes keywords (e.g., `int`, `return`), identifiers, literals, 
+/// operators, delimiters, and control structures for a minimal C-like language.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Int,
@@ -32,7 +35,19 @@ pub enum Token {
     Unknown(char),
 }
 
-// Converts source code string into a vector of tokens
+/// Lexical analyzer (tokenizer) for a subset of the C language.
+/// 
+/// This function takes raw source code as input and produces a sequence of `Token`s,
+/// representing keywords, identifiers, numbers, operators, and punctuation symbols.
+/// 
+/// It handles whitespace skipping, keyword recognition, multi-digit number parsing,
+/// and basic operator disambiguation (e.g., `=` vs `==`).
+/// 
+/// # Parameters
+/// - `source`: A string slice containing the source code to tokenize.
+///
+/// # Returns
+/// - `Vec<Token>`: A vector of tokens representing the lexical structure of the input.
 pub fn tokenizer(source: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut chars = source.chars().peekable();
@@ -144,7 +159,8 @@ pub fn tokenizer(source: &str) -> Vec<Token> {
     tokens
 }
 
-// AST node types
+/// AST node types representing statements and control flow in the language.
+/// Includes return, if, while, blocks, declarations, assignments, and functions.
 #[derive(Debug, PartialEq)]
 pub enum ASTNode {
     Return(Box<Expr>),
@@ -167,7 +183,7 @@ pub enum ASTNode {
     },
 }
 
-// Expression types for the AST
+/// Expression types used in the AST, including literals, variables, operations, and function calls.
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(i64),
@@ -184,7 +200,7 @@ pub enum Expr {
     Var(String),
 }
 
-// Parses a sequence of tokens into an AST
+/// Parses tokens into an AST for a basic C-like function, assuming `int main(...) { ... }` format.
 pub fn parse_token(tokens: &[Token]) -> ASTNode {
     let mut iter = tokens.iter().peekable();
 
@@ -462,7 +478,7 @@ fn parse_primary(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
     }
 }
 
-// Instruction set for the VM
+/// Enum representing the virtual machine's instruction set for executing compiled code.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Instruction {
     IMM(i64),
@@ -507,6 +523,8 @@ pub struct VM {
     pub running: bool,
 }
 
+
+/// A stack-based virtual machine for executing C4-style bytecode instructions.
 impl VM {
     pub fn new(program: Vec<Instruction>) -> Self {
         VM {
@@ -733,15 +751,19 @@ fn get_vm_inner(
     patches: &mut Vec<(usize, String)>,
 ) {
     match ast {
+         // Generate return value and exit the program
+        // Handles: return <expr>;
         ASTNode::Return(expr) => {
             emit_expr(expr, instructions, symbol_table, patches);
             instructions.push(Instruction::PSH);
             instructions.push(Instruction::EXIT);
         }
+        // Generate conditional branch (if-else)
+        // Handles: if (<condition>) { ... } else { ... }
         ASTNode::If { condition, then_branch, else_branch } => {
             emit_expr(condition, instructions, symbol_table, patches);
             let jump_false_index = instructions.len();
-            instructions.push(Instruction::BZ(9999));
+            instructions.push(Instruction::BZ(9999));// Patch jump to 'else' or 'after then' based on condition outcome
             get_vm_inner(then_branch, instructions, symbol_table, next_offset, patches);
             if let Some(else_branch) = else_branch {
                 let jump_over_else_index = instructions.len();
@@ -756,6 +778,8 @@ fn get_vm_inner(
                 instructions[jump_false_index] = Instruction::BZ(after_then);
             }
         }
+         // Generate loop with conditional jump (while-loop)
+        // Handles: while (<condition>) { ... }
         ASTNode::While { condition, body } => {
             let loop_start = instructions.len();
             emit_expr(condition, instructions, symbol_table, patches);
@@ -766,19 +790,22 @@ fn get_vm_inner(
             let loop_end = instructions.len();
             instructions[jump_if_false_index] = Instruction::BZ(loop_end);
         }
+        // Execute a sequence of statements in order
         ASTNode::Sequence(statements) => {
             for stmt in statements {
                 get_vm_inner(stmt, instructions, symbol_table, next_offset, patches);
             }
         }
+        // Handle variable declaration: allocate space and initialize
         ASTNode::Declaration(name, expr) => {
             let offset = *next_offset;
             *next_offset += 1;
             symbol_table.insert(name.clone(), offset);
-            instructions.push(Instruction::LEA(offset));
-            emit_expr(expr, instructions, symbol_table, patches);
+            instructions.push(Instruction::LEA(offset));// Push address for variable storage
+            emit_expr(expr, instructions, symbol_table, patches);// Emit expression instructions and store result
             instructions.push(Instruction::SI);
         }
+        // Handle variable assignment: evaluate and store value
         ASTNode::Assignment(name, expr) => {
             if let Some(&offset) = symbol_table.get(name) {
                 instructions.push(Instruction::LEA(offset));
@@ -788,6 +815,7 @@ fn get_vm_inner(
                 panic!("Assignment to undeclared variable: {}", name);
             }
         }
+        // Handle function definition: reset symbol table and compile body
         ASTNode::FunctionDef { name: _, params, body } => {
             symbol_table.clear();
             *next_offset = params.len();
@@ -799,7 +827,11 @@ fn get_vm_inner(
     }
 }
 
-// Emits instructions for a given expression
+// Translates a high-level expression (AST) into low-level virtual machine instructions.
+// This function recursively traverses the expression tree and generates instructions
+// that the virtual machine can execute. It supports arithmetic operations, comparisons,
+// variable access, and function calls. For variables, it uses a symbol table to resolve
+// memory offsets. For function calls, it defers jump resolution using a patch table.
 fn emit_expr(
     expr: &Expr,
     instructions: &mut Vec<Instruction>,
@@ -877,7 +909,10 @@ fn emit_expr(
     }
 }
 
-// Main function to run the compiler
+// Entry point for the compiler and virtual machine.
+// This function reads a C-like source file, tokenizes it, parses it into an AST,
+// translates the AST into virtual machine instructions, and then executes the program.
+// Expects a single command-line argument: the path to the input C file.
 fn main() {
     let args: Vec<String> = env::args().collect();
 
