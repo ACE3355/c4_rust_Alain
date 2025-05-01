@@ -4,7 +4,7 @@ use std::fs;
 use std::iter::Peekable;
 use std::slice::Iter;
 
-// Tokens recognized by the lexer
+// Tokens recognized by the lexers
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Int,
