@@ -1,4 +1,482 @@
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::iter::Peekable;
+use std::slice::Iter;
 
+/// Represents the set of lexical tokens recognized by the compiler.
+/// These tokens are produced by the lexer and consumed by the parser.
+/// Includes keywords (e.g., `int`, `return`), identifiers, literals, 
+/// operators, delimiters, and control structures for a minimal C-like language.
+#[derive(Debug, PartialEq, Clone)]
+pub enum Token {
+    Int,
+    Return,
+    Identifier(String),
+    Number(i64),
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    Semicolon,
+    Plus,
+    Star,
+    Minus,
+    Divide,
+    Mod,
+    Equal,
+    Less,
+    Greater,
+    If,
+    Else,
+    While,
+    Assign,
+    Comma,
+    Unknown(char),
+}
+
+/// Lexical analyzer (tokenizer) for a subset of the C language.
+/// 
+/// This function takes raw source code as input and produces a sequence of `Token`s,
+/// representing keywords, identifiers, numbers, operators, and punctuation symbols.
+/// 
+/// It handles whitespace skipping, keyword recognition, multi-digit number parsing,
+/// and basic operator disambiguation (e.g., `=` vs `==`).
+/// 
+/// # Parameters
+/// - `source`: A string slice containing the source code to tokenize.
+///
+/// # Returns
+/// - `Vec<Token>`: A vector of tokens representing the lexical structure of the input.
+pub fn tokenizer(source: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut chars = source.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            ' ' | '\n' | '\r' | '\t' => {
+                chars.next();
+            }
+            '(' => {
+                chars.next();
+                tokens.push(Token::LParen);
+            }
+            ')' => {
+                chars.next();
+                tokens.push(Token::RParen);
+            }
+            '{' => {
+                chars.next();
+                tokens.push(Token::LBrace);
+            }
+            '}' => {
+                chars.next();
+                tokens.push(Token::RBrace);
+            }
+            ';' => {
+                chars.next();
+                tokens.push(Token::Semicolon);
+            }
+            '0'..='9' => {
+                let mut num = 0;
+                while let Some(c) = chars.peek() {
+                    if c.is_digit(10) {
+                        num = num * 10 + c.to_digit(10).unwrap() as i64;
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                tokens.push(Token::Number(num));
+            }
+            '+' => {
+                chars.next();
+                tokens.push(Token::Plus);
+            }
+            '*' => {
+                chars.next();
+                tokens.push(Token::Star);
+            }
+            '-' => {
+                chars.next();
+                tokens.push(Token::Minus);
+            }
+            '/' => {
+                chars.next();
+                tokens.push(Token::Divide);
+            }
+            '%' => {
+                chars.next();
+                tokens.push(Token::Mod);
+            }
+            '=' => {
+                chars.next();
+                if let Some('=') = chars.peek() {
+                    chars.next();
+                    tokens.push(Token::Equal); // '=='
+                } else {
+                    tokens.push(Token::Assign); // '='
+                }
+            }
+            '<' => {
+                chars.next();
+                tokens.push(Token::Less);
+            }
+            '>' => {
+                chars.next();
+                tokens.push(Token::Greater);
+            }
+            ',' => {
+                chars.next();
+                tokens.push(Token::Comma);
+            }
+            'a'..='z' | 'A'..='Z' | '_' => {
+                let mut ident = String::new();
+                while let Some(c) = chars.peek() {
+                    if c.is_alphanumeric() || *c == '_' {
+                        ident.push(*c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                match ident.as_str() {
+                    "int" => tokens.push(Token::Int),
+                    "return" => tokens.push(Token::Return),
+                    "if" => tokens.push(Token::If),
+                    "else" => tokens.push(Token::Else),
+                    "while" => tokens.push(Token::While),
+                    _ => tokens.push(Token::Identifier(ident)),
+                }
+            }
+            _ => {
+                tokens.push(Token::Unknown(ch));
+                chars.next();
+            }
+        }
+    }
+
+    tokens
+}
+
+/// AST node types representing statements and control flow in the language.
+/// Includes return, if, while, blocks, declarations, assignments, and functions.
+#[derive(Debug, PartialEq)]
+pub enum ASTNode {
+    Return(Box<Expr>),
+    If {
+        condition: Box<Expr>,
+        then_branch: Box<ASTNode>,
+        else_branch: Option<Box<ASTNode>>,
+    },
+    While {
+        condition: Box<Expr>,
+        body: Box<ASTNode>,
+    },
+    Sequence(Vec<ASTNode>),
+    Declaration(String, Box<Expr>),
+    Assignment(String, Box<Expr>),
+    FunctionDef {
+        name: String,
+        params: Vec<String>,
+        body: Box<ASTNode>,
+    },
+}
+
+/// Expression types used in the AST, including literals, variables, operations, and function calls.
+#[derive(Debug, PartialEq)]
+pub enum Expr {
+    Number(i64),
+    Variable(String),
+    Add(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
+    Mod(Box<Expr>, Box<Expr>),
+    Equal(Box<Expr>, Box<Expr>),
+    Less(Box<Expr>, Box<Expr>),
+    Greater(Box<Expr>, Box<Expr>),
+    Call(String, Vec<Expr>),
+    Var(String),
+}
+
+/// Parses tokens into an AST for a basic C-like function, assuming `int main(...) { ... }` format.
+pub fn parse_token(tokens: &[Token]) -> ASTNode {
+    let mut iter = tokens.iter().peekable();
+
+    // Parsing for: int main(...) {
+    match (iter.next(), iter.next(), iter.next()) {
+        (Some(Token::Int), Some(Token::Identifier(_)), Some(Token::LParen)) => {
+            while let Some(token) = iter.next() {
+                if *token == Token::LBrace {
+                    break;
+                }
+            }
+        }
+        _ => panic!("Syntax error in function declaration"),
+    }
+
+    let mut statements = Vec::new();
+
+    while let Some(token) = iter.peek() {
+        match token {
+            Token::Return | Token::If | Token::While | Token::LBrace | Token::Int | Token::Identifier(_) => {
+                statements.push(parse_stmt(&mut iter));
+            }
+            Token::RBrace => {
+                iter.next();
+                break;
+            }
+            _ => panic!("Unexpected token inside block: {:?}", token),
+        }
+    }
+
+    ASTNode::Sequence(statements)
+}
+
+// Parses a variable declaration
+fn parse_declaration(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    let name = match iter.next() {
+        Some(Token::Identifier(name)) => name.clone(),
+        _ => panic!("Expected variable name"),
+    };
+
+    ex_token(iter, Token::Assign);
+    let expr = parser_expression(iter);
+    ex_token(iter, Token::Semicolon);
+
+    ASTNode::Declaration(name, expr)
+}
+
+// Parses an assignment statement
+fn parser_state(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    let name = match iter.next() {
+        Some(Token::Identifier(name)) => name.clone(),
+        _ => panic!("Expected variable"),
+    };
+
+    ex_token(iter, Token::Assign);
+    let expr = parser_expression(iter);
+    ex_token(iter, Token::Semicolon);
+
+    ASTNode::Assignment(name, expr)
+}
+
+// Parses an individual statement
+fn parse_stmt(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    match iter.peek() {
+        Some(Token::Return) => {
+            iter.next();
+            let expr = parser_expression(iter);
+            ex_token(iter, Token::Semicolon);
+            ASTNode::Return(expr)
+        }
+        Some(Token::If) => {
+            iter.next();
+            parser_if_state(iter)
+        }
+        Some(Token::LBrace) => {
+            parser_block(iter)
+        }
+        Some(Token::While) => {
+            iter.next();
+            parser_while_loop(iter)
+        }
+        Some(Token::Int) => {
+            iter.next();
+            parse_declaration(iter)
+        }
+        Some(Token::Identifier(_)) => parser_state(iter),
+        _ => panic!("Expected condition"),
+    }
+}
+
+// Parses a while loop
+fn parser_while_loop(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    ex_token(iter, Token::LParen);
+    let condition = parser_expression(iter);
+    ex_token(iter, Token::RParen);
+
+    let body = parse_stmt(iter);
+
+    ASTNode::While {
+        condition,
+        body: Box::new(body),
+    }
+}
+
+// Parses a block of statements
+fn parser_block(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    ex_token(iter, Token::LBrace);
+    let mut stmts = Vec::new();
+
+    while let Some(token) = iter.peek() {
+        match token {
+            Token::RBrace => {
+                iter.next();
+                break;
+            }
+            Token::Return | Token::If | Token::While | Token::LBrace => {
+                stmts.push(parse_stmt(iter));
+            }
+            t => panic!("Unexpected token inside block: {:?}", t),
+        }
+    }
+
+    ASTNode::Sequence(stmts)
+}
+
+// Parses an if statement
+fn parser_if_state(iter: &mut Peekable<Iter<Token>>) -> ASTNode {
+    ex_token(iter, Token::LParen);
+    let condition = parser_expression(iter);
+    ex_token(iter, Token::RParen);
+
+    let then_branch = parse_stmt(iter);
+
+    let else_branch = if let Some(Token::Else) = iter.peek() {
+        iter.next();
+        Some(Box::new(parse_stmt(iter)))
+    } else {
+        None
+    };
+
+    ASTNode::If {
+        condition,
+        then_branch: Box::new(then_branch),
+        else_branch,
+    }
+}
+
+// Ensures the next token matches the expected token
+fn ex_token(iter: &mut Peekable<Iter<Token>>, expected: Token) {
+    match iter.next() {
+        Some(t) if *t == expected => {}
+        other => panic!("Expected {:?}, got {:?}", expected, other),
+    }
+}
+
+// Parses an expression
+fn parser_expression(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
+    parser_difference(iter)
+}
+
+// Parses a comparison expression
+fn parser_difference(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
+    let mut left = parse_add_sub(iter);
+
+    while let Some(token) = iter.peek() {
+        match token {
+            Token::Equal => {
+                iter.next();
+                let right = parse_add_sub(iter);
+                left = Box::new(Expr::Equal(left, right));
+            }
+            Token::Less => {
+                iter.next();
+                let right = parse_add_sub(iter);
+                left = Box::new(Expr::Less(left, right));
+            }
+            Token::Greater => {
+                iter.next();
+                let right = parse_add_sub(iter);
+                left = Box::new(Expr::Greater(left, right));
+            }
+            _ => break,
+        }
+    }
+
+    left
+}
+
+// Parses an addition or subtraction expression
+fn parse_add_sub(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
+    let mut left = parse_mul_div(iter);
+
+    while let Some(token) = iter.peek() {
+        match token {
+            Token::Plus => {
+                iter.next();
+                let right = parse_mul_div(iter);
+                left = Box::new(Expr::Add(left, right));
+            }
+            Token::Minus => {
+                iter.next();
+                let right = parse_mul_div(iter);
+                left = Box::new(Expr::Sub(left, right));
+            }
+            _ => break,
+        }
+    }
+
+    left
+}
+
+// Parses a multiplication or division expression
+fn parse_mul_div(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
+    let mut left = parse_primary(iter);
+
+    while let Some(token) = iter.peek() {
+        match token {
+            Token::Star => {
+                iter.next();
+                let right = parse_primary(iter);
+                left = Box::new(Expr::Mul(left, right));
+            }
+            Token::Divide => {
+                iter.next();
+                let right = parse_primary(iter);
+                left = Box::new(Expr::Div(left, right));
+            }
+            Token::Mod => {
+                iter.next();
+                let right = parse_primary(iter);
+                left = Box::new(Expr::Mod(left, right));
+            }
+            _ => break,
+        }
+    }
+
+    left
+}
+
+// Parses a primary expression
+fn parse_primary(iter: &mut Peekable<Iter<Token>>) -> Box<Expr> {
+    match iter.next() {
+        Some(Token::Number(n)) => Box::new(Expr::Number(*n)),
+        Some(Token::Identifier(name)) => {
+            let name = name.clone();
+            if let Some(Token::LParen) = iter.peek() {
+                iter.next();
+                let mut args = Vec::new();
+                while let Some(token) = iter.peek() {
+                    if let Token::RParen = token {
+                        break;
+                    }
+                    let arg = parser_expression(iter);
+                    args.push(*arg);
+                    if let Some(Token::Comma) = iter.peek() {
+                        iter.next();
+                    } else {
+                        break;
+                    }
+                }
+                ex_token(iter, Token::RParen);
+                Box::new(Expr::Call(name, args))
+            } else {
+                Box::new(Expr::Var(name))
+            }
+        }
+        Some(Token::LParen) => {
+            let expr = parser_expression(iter);
+            match iter.next() {
+                Some(Token::RParen) => expr,
+                _ => panic!("Expected closing parenthesis"),
+            }
+        }
+        other => panic!("Expected number, variable, or '(', got {:?}", other),
+    }
+}
 
 /// Enum representing the virtual machine's instruction set for executing compiled code.
 #[derive(Debug, Clone, Copy, PartialEq)]
